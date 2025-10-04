@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		E42C85962E91E16B0097D0D8 /* GoogleGenerativeAI in Frameworks */ = {isa = PBXBuildFile; productRef = E42C85952E91E16B0097D0D8 /* GoogleGenerativeAI */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		E42C85782E91DFC10097D0D8 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -35,16 +39,6 @@
 			path = TruthLens;
 			sourceTree = "<group>";
 		};
-		E42C857A2E91DFC10097D0D8 /* TruthLensTests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = TruthLensTests;
-			sourceTree = "<group>";
-		};
-		E42C85842E91DFC10097D0D8 /* TruthLensUITests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = TruthLensUITests;
-			sourceTree = "<group>";
-		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -52,6 +46,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E42C85962E91E16B0097D0D8 /* GoogleGenerativeAI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -76,8 +71,6 @@
 			isa = PBXGroup;
 			children = (
 				E42C85682E91DFBF0097D0D8 /* TruthLens */,
-				E42C857A2E91DFC10097D0D8 /* TruthLensTests */,
-				E42C85842E91DFC10097D0D8 /* TruthLensUITests */,
 				E42C85672E91DFBF0097D0D8 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -112,6 +105,7 @@
 			);
 			name = TruthLens;
 			packageProductDependencies = (
+				E42C85952E91E16B0097D0D8 /* GoogleGenerativeAI */,
 			);
 			productName = TruthLens;
 			productReference = E42C85662E91DFBF0097D0D8 /* TruthLens.app */;
@@ -129,9 +123,6 @@
 			);
 			dependencies = (
 				E42C85792E91DFC10097D0D8 /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				E42C857A2E91DFC10097D0D8 /* TruthLensTests */,
 			);
 			name = TruthLensTests;
 			packageProductDependencies = (
@@ -152,9 +143,6 @@
 			);
 			dependencies = (
 				E42C85832E91DFC10097D0D8 /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				E42C85842E91DFC10097D0D8 /* TruthLensUITests */,
 			);
 			name = TruthLensUITests;
 			packageProductDependencies = (
@@ -195,6 +183,9 @@
 			);
 			mainGroup = E42C855D2E91DFBF0097D0D8;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				E42C85942E91E16B0097D0D8 /* XCRemoteSwiftPackageReference "generative-ai-swift" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = E42C85672E91DFBF0097D0D8 /* Products */;
 			projectDirPath = "";
@@ -549,6 +540,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		E42C85942E91E16B0097D0D8 /* XCRemoteSwiftPackageReference "generative-ai-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google/generative-ai-swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.5.6;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		E42C85952E91E16B0097D0D8 /* GoogleGenerativeAI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E42C85942E91E16B0097D0D8 /* XCRemoteSwiftPackageReference "generative-ai-swift" */;
+			productName = GoogleGenerativeAI;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = E42C855E2E91DFBF0097D0D8 /* Project object */;
 }
