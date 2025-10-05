@@ -16,23 +16,23 @@ struct PopoverView: View {
                     ForEach(gemini.receivedMessages.indices, id: \.self) { index in
                         let message = gemini.receivedMessages[index]
                         HStack {
-                            if message.hasPrefix("Gemini:") {
-                                Text("🤖")
+                            if message.hasPrefix("🤖") {
                                 Text(message)
                                     .foregroundColor(.primary)
                                     .textSelection(.enabled)
-                            } else if message.hasPrefix("Status:") {
-                                Text("📋")
+                            } else if message.hasPrefix("📱") {
                                 Text(message)
                                     .foregroundColor(.green)
                                     .font(.caption)
-                            } else if message.hasPrefix("Error:") {
-                                Text("❌")
+                            } else if message.hasPrefix("❌") {
                                 Text(message)
                                     .foregroundColor(.red)
                                     .font(.caption)
+                            } else if message.hasPrefix("⏹️") {
+                                Text(message)
+                                    .foregroundColor(.orange)
+                                    .font(.caption)
                             } else {
-                                Text("ℹ️")
                                 Text(message)
                                     .foregroundColor(.gray)
                                     .font(.caption)
@@ -49,22 +49,31 @@ struct PopoverView: View {
             .border(Color.gray.opacity(0.3))
 
             HStack {
-                Button("💬 Send Test") {
-                    gemini.sendText("Hello! Can you see my screen? Please describe what you observe.")
+                if gemini.isSessionActive {
+                    Button("📸 Start Analysis") {
+                        capture.startCapture()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!gemini.isSessionActive)
+
+                    Button("⏹️ Stop Analysis") {
+                        capture.stopCapture()
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("🔚 End Session") {
+                        capture.stopCapture()
+                        gemini.stopSession()
+                    }
+                    .buttonStyle(.bordered)
+                } else {
+                    Button("🚀 Start Session") {
+                        gemini.startSession()
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
-                .buttonStyle(.borderedProminent)
 
                 Spacer()
-
-                Button("📸 Start Capture") {
-                    capture.startCapture()
-                }
-                .buttonStyle(.bordered)
-
-                Button("⏹️ Stop") {
-                    capture.stopCapture()
-                }
-                .buttonStyle(.bordered)
             }
 
             Text("Messages: \(gemini.receivedMessages.count)")

@@ -1,261 +1,281 @@
-
 """
-## Setup
+TruthLens Bridge Server
 
-To install the dependencies for this script, run:
+Re-engineered version of main_old.py that:
+- Always uses screen mode (but gets frames from Swift app instead of MSS)
+- Removes all audio components
+- Uses text-only responses
+- Adds WebSocket server to communicate with Swift app
+- Uses the proven Live API connection from original code
 
-``` 
-pip install google-genai opencv-python pyaudio pillow mss
-```
+Setup:
+pip install google-genai websockets python-dotenv
 
-Before running this script, ensure the `GOOGLE_API_KEY` environment
-variable is set to the api-key you obtained from Google AI Studio.
-
-Important: **Use headphones**. This script uses the system default audio
-input and output, which often won't include echo cancellation. So to prevent
-the model from interrupting itself it is important that you use headphones. 
-
-## Run
-
-To run the script:
-
-```
-python Get_started_LiveAPI.py
-```
-
-The script takes a video-mode flag `--mode`, this can be "camera", "screen", or "none".
-The default is "camera". To share your screen run:
-
-```
-python Get_started_LiveAPI.py --mode screen
-```
+Usage:
+python main_bridge.py
 """
 
 import asyncio
 import base64
-import io
+import json
+import logging
 import os
 import sys
 import traceback
-
-import cv2
-import pyaudio
-import PIL.Image
-import mss
-
-import argparse
-
+import websockets
 from google import genai
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 if sys.version_info < (3, 11, 0):
     import taskgroup, exceptiongroup
-
     asyncio.TaskGroup = taskgroup.TaskGroup
     asyncio.ExceptionGroup = exceptiongroup.ExceptionGroup
 
-FORMAT = pyaudio.paInt16
-CHANNELS = 1
-SEND_SAMPLE_RATE = 16000
-RECEIVE_SAMPLE_RATE = 24000
-CHUNK_SIZE = 1024
-
+# Gemini Live API configuration
 MODEL = "models/gemini-2.0-flash-live-001"
-
-DEFAULT_MODE = "camera"
+CONFIG = {"response_modalities": ["TEXT"]}  # Text only, no audio
 
 client = genai.Client(http_options={"api_version": "v1beta"})
 
-CONFIG = {"response_modalities": ["AUDIO"]}
-
-pya = pyaudio.PyAudio()
-
-
-class AudioLoop:
-    def __init__(self, video_mode=DEFAULT_MODE):
-        self.video_mode = video_mode
-
-        self.audio_in_queue = None
-        self.out_queue = None
-
+class TruthLensBridge:
+    def __init__(self):
+        self.frame_queue = None
+        self.response_queue = None
         self.session = None
+        self.websocket_clients = set()
+        self.running = False
 
-        self.send_text_task = None
-        self.receive_audio_task = None
-        self.play_audio_task = None
+    async def handle_websocket_client(self, websocket):
+        """Handle WebSocket connection from Swift app"""
+        client_id = f"{websocket.remote_address[0]}:{websocket.remote_address[1]}"
+        logger.info(f"Swift app connected: {client_id}")
 
-    async def send_text(self):
-        while True:
-            text = await asyncio.to_thread(
-                input,
-                "message > ",
-            )
-            if text.lower() == "q":
-                break
-            await self.session.send(input=text or ".", end_of_turn=True)
+        self.websocket_clients.add(websocket)
 
-    def _get_frame(self, cap):
-        # Read the frameq
-        ret, frame = cap.read()
-        # Check if the frame was read successfully
-        if not ret:
-            return None
-        # Fix: Convert BGR to RGB color space
-        # OpenCV captures in BGR but PIL expects RGB format
-        # This prevents the blue tint in the video feed
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img = PIL.Image.fromarray(frame_rgb)  # Now using RGB frame
-        img.thumbnail([1024, 1024])
+        try:
+            async for message in websocket:
+                try:
+                    data = json.loads(message)
+                    await self.process_swift_message(websocket, client_id, data)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Invalid JSON from {client_id}: {e}")
+                    await self.send_error(websocket, f"Invalid JSON: {str(e)}")
+                except Exception as e:
+                    logger.error(f"Error processing message from {client_id}: {e}")
+                    await self.send_error(websocket, f"Processing error: {str(e)}")
 
-        image_io = io.BytesIO()
-        img.save(image_io, format="jpeg")
-        image_io.seek(0)
+        except websockets.exceptions.ConnectionClosed:
+            logger.info(f"Swift app {client_id} disconnected")
+        except Exception as e:
+            logger.error(f"WebSocket error with {client_id}: {e}")
+        finally:
+            self.websocket_clients.discard(websocket)
 
-        mime_type = "image/jpeg"
-        image_bytes = image_io.read()
-        return {"mime_type": mime_type, "data": base64.b64encode(image_bytes).decode()}
+    async def process_swift_message(self, websocket, client_id, data):
+        """Process messages from Swift app"""
+        message_type = data.get("type")
+        logger.info(f"Processing '{message_type}' from {client_id}")
 
-    async def get_frames(self):
-        # This takes about a second, and will block the whole program
-        # causing the audio pipeline to overflow if you don't to_thread it.
-        cap = await asyncio.to_thread(
-            cv2.VideoCapture, 0
-        )  # 0 represents the default camera
+        if message_type == "start_session":
+            await self.send_success(websocket, "session_started", "Connected to Gemini AI Live")
 
-        while True:
-            frame = await asyncio.to_thread(self._get_frame, cap)
-            if frame is None:
-                break
+        elif message_type == "screen_frame":
+            # Add frame to processing queue
+            if self.frame_queue:
+                image_data_b64 = data.get("image_data")
+                if image_data_b64:
+                    frame_data = {
+                        "mime_type": "image/jpeg",
+                        "data": image_data_b64
+                    }
+                    try:
+                        self.frame_queue.put_nowait(frame_data)
+                    except asyncio.QueueFull:
+                        logger.warning(f"Frame queue full, dropping frame from {client_id}")
+                else:
+                    await self.send_error(websocket, "No image_data in screen_frame")
+            else:
+                await self.send_error(websocket, "Gemini session not active")
 
-            await asyncio.sleep(1.0)
+        elif message_type == "stop_session":
+            await self.send_success(websocket, "session_stopped", "Session ended")
 
-            await self.out_queue.put(frame)
-
-        # Release the VideoCapture object
-        cap.release()
-
-    def _get_screen(self):
-        sct = mss.mss()
-        monitor = sct.monitors[0]
-
-        i = sct.grab(monitor)
-
-        mime_type = "image/jpeg"
-        image_bytes = mss.tools.to_png(i.rgb, i.size)
-        img = PIL.Image.open(io.BytesIO(image_bytes))
-
-        image_io = io.BytesIO()
-        img.save(image_io, format="jpeg")
-        image_io.seek(0)
-
-        image_bytes = image_io.read()
-        return {"mime_type": mime_type, "data": base64.b64encode(image_bytes).decode()}
-
-    async def get_screen(self):
-
-        while True:
-            frame = await asyncio.to_thread(self._get_screen)
-            if frame is None:
-                break
-
-            await asyncio.sleep(1.0)
-
-            await self.out_queue.put(frame)
-
-    async def send_realtime(self):
-        while True:
-            msg = await self.out_queue.get()
-            await self.session.send(input=msg)
-
-    async def listen_audio(self):
-        mic_info = pya.get_default_input_device_info()
-        self.audio_stream = await asyncio.to_thread(
-            pya.open,
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=SEND_SAMPLE_RATE,
-            input=True,
-            input_device_index=mic_info["index"],
-            frames_per_buffer=CHUNK_SIZE,
-        )
-        if __debug__:
-            kwargs = {"exception_on_overflow": False}
         else:
-            kwargs = {}
-        while True:
-            data = await asyncio.to_thread(self.audio_stream.read, CHUNK_SIZE, **kwargs)
-            await self.out_queue.put({"data": data, "mime_type": "audio/pcm"})
+            # Handle legacy format
+            if "realtime_input" in data:
+                logger.info(f"Converting legacy format from {client_id}")
+                try:
+                    media_chunks = data["realtime_input"]["media_chunks"]
+                    if media_chunks and len(media_chunks) > 0:
+                        image_data = media_chunks[0]["data"]
+                        if self.frame_queue:
+                            frame_data = {
+                                "mime_type": "image/jpeg",
+                                "data": image_data
+                            }
+                            try:
+                                self.frame_queue.put_nowait(frame_data)
+                            except asyncio.QueueFull:
+                                logger.warning("Frame queue full, dropping legacy frame")
+                        else:
+                            await self.send_error(websocket, "Gemini session not active")
+                        return
+                except (KeyError, IndexError, TypeError) as e:
+                    logger.error(f"Failed to convert legacy format: {e}")
 
-    async def receive_audio(self):
-        "Background task to reads from the websocket and write pcm chunks to the output queue"
-        while True:
-            turn = self.session.receive()
-            async for response in turn:
-                if data := response.data:
-                    self.audio_in_queue.put_nowait(data)
-                    continue
-                if text := response.text:
-                    print(text, end="")
+            await self.send_error(websocket, f"Unknown message type: {message_type}")
 
-            # If you interrupt the model, it sends a turn_complete.
-            # For interruptions to work, we need to stop playback.
-            # So empty out the audio queue because it may have loaded
-            # much more audio than has played yet.
-            while not self.audio_in_queue.empty():
-                self.audio_in_queue.get_nowait()
+    async def send_realtime_frames(self):
+        """Send frames from queue to Gemini Live API"""
+        while self.running:
+            try:
+                # Get frame from queue (with timeout to allow clean shutdown)
+                frame = await asyncio.wait_for(self.frame_queue.get(), timeout=1.0)
+                logger.info(f"Sending frame to Gemini (size: {len(frame['data'])} chars)")
 
-    async def play_audio(self):
-        stream = await asyncio.to_thread(
-            pya.open,
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=RECEIVE_SAMPLE_RATE,
-            output=True,
-        )
-        while True:
-            bytestream = await self.audio_in_queue.get()
-            await asyncio.to_thread(stream.write, bytestream)
+                # Send the image frame
+                await self.session.send(input=frame)
+
+                # Send a text prompt to trigger analysis
+                await self.session.send(
+                    input="Please describe what you see in this screen capture in one clear sentence.",
+                    end_of_turn=True
+                )
+
+            except asyncio.TimeoutError:
+                continue  # Normal timeout, keep checking
+            except Exception as e:
+                logger.error(f"Error sending frame to Gemini: {e}")
+                await asyncio.sleep(1)
+
+    async def receive_gemini_responses(self):
+        """Receive text responses from Gemini and send to Swift app"""
+        while self.running:
+            try:
+                turn = self.session.receive()
+                response_text = ""
+
+                async for response in turn:
+                    if text := response.text:
+                        response_text += text
+                        # Send partial responses as they arrive
+                        logger.info(f"Gemini response: {text}")
+                        await self.broadcast_to_swift({
+                            "type": "analysis_response",
+                            "text": text
+                        })
+
+                # Send final accumulated response if we have one
+                if response_text:
+                    logger.info(f"Complete Gemini response: {response_text[:100]}...")
+
+            except Exception as e:
+                logger.error(f"Error receiving from Gemini: {e}")
+                await asyncio.sleep(1)
+
+    async def broadcast_to_swift(self, message):
+        """Send message to all connected Swift apps"""
+        if not self.websocket_clients:
+            return
+
+        message_json = json.dumps(message)
+        disconnected = set()
+
+        for websocket in self.websocket_clients:
+            try:
+                await websocket.send(message_json)
+            except websockets.exceptions.ConnectionClosed:
+                disconnected.add(websocket)
+            except Exception as e:
+                logger.error(f"Error sending to Swift app: {e}")
+                disconnected.add(websocket)
+
+        # Clean up disconnected clients
+        for websocket in disconnected:
+            self.websocket_clients.discard(websocket)
+
+    async def send_success(self, websocket, msg_type, message):
+        """Send success message to specific Swift app"""
+        response = {
+            "type": msg_type,
+            "message": message
+        }
+        await websocket.send(json.dumps(response))
+
+    async def send_error(self, websocket, message):
+        """Send error message to specific Swift app"""
+        response = {
+            "type": "error",
+            "message": message
+        }
+        await websocket.send(json.dumps(response))
 
     async def run(self):
+        """Main run loop with Gemini Live API and WebSocket server"""
         try:
+            logger.info("Starting TruthLens Bridge Server")
+
+            # Start WebSocket server
+            websocket_server = await websockets.serve(
+                self.handle_websocket_client,
+                "localhost",
+                9083
+            )
+            logger.info("WebSocket server started on localhost:9083")
+
             async with (
                 client.aio.live.connect(model=MODEL, config=CONFIG) as session,
                 asyncio.TaskGroup() as tg,
             ):
                 self.session = session
+                self.running = True
 
-                self.audio_in_queue = asyncio.Queue()
-                self.out_queue = asyncio.Queue(maxsize=5)
+                # Initialize queues
+                self.frame_queue = asyncio.Queue(maxsize=5)
+                self.response_queue = asyncio.Queue()
 
-                send_text_task = tg.create_task(self.send_text())
-                tg.create_task(self.send_realtime())
-                tg.create_task(self.listen_audio())
-                if self.video_mode == "camera":
-                    tg.create_task(self.get_frames())
-                elif self.video_mode == "screen":
-                    tg.create_task(self.get_screen())
+                logger.info("Connected to Gemini Live API")
 
-                tg.create_task(self.receive_audio())
-                tg.create_task(self.play_audio())
+                # Start processing tasks
+                tg.create_task(self.send_realtime_frames())
+                tg.create_task(self.receive_gemini_responses())
 
-                await send_text_task
-                raise asyncio.CancelledError("User requested exit")
+                # Keep running until interrupted
+                logger.info("Bridge server running. Press Ctrl+C to stop.")
+                await asyncio.Future()  # Run forever
 
-        except asyncio.CancelledError:
-            pass
-        except ExceptionGroup as EG:
-            self.audio_stream.close()
-            traceback.print_exception(EG)
+        except KeyboardInterrupt:
+            logger.info("Shutting down...")
+        except Exception as e:
+            logger.error(f"Server error: {e}")
+            traceback.print_exc()
+        finally:
+            self.running = False
+            if hasattr(self, 'websocket_server'):
+                websocket_server.close()
+                await websocket_server.wait_closed()
 
+async def main():
+    """Start the bridge server"""
+    if not os.getenv("GOOGLE_API_KEY"):
+        logger.error("GOOGLE_API_KEY environment variable not set")
+        return
+
+    bridge = TruthLensBridge()
+    await bridge.run()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--mode",
-        type=str,
-        default=DEFAULT_MODE,
-        help="pixels to stream from",
-        choices=["camera", "screen", "none"],
-    )
-    args = parser.parse_args()
-    main = AudioLoop(video_mode=args.mode)
-    asyncio.run(main.run())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Server stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        traceback.print_exc()

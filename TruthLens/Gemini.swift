@@ -6,6 +6,7 @@ class GeminiClient: ObservableObject {
 
     // Published so SwiftUI will react to updates
     @Published var receivedMessages: [String] = []
+    @Published var isSessionActive: Bool = false
 
     init() {
         connect()
@@ -20,19 +21,26 @@ class GeminiClient: ObservableObject {
         webSocket = urlSession.webSocketTask(with: url)
         webSocket?.resume()
 
-        // Send initial setup message as expected by the Python backend
-        sendSetupMessage()
         receive()
     }
 
-    private func sendSetupMessage() {
-        let setupPayload: [String: Any] = [
-            "setup": [
-                "response_modalities": ["AUDIO", "TEXT"]
-            ]
+    func startSession() {
+        let message: [String: Any] = [
+            "type": "start_session"
         ]
 
-        if let data = try? JSONSerialization.data(withJSONObject: setupPayload),
+        if let data = try? JSONSerialization.data(withJSONObject: message),
+           let jsonString = String(data: data, encoding: .utf8) {
+            send(jsonString)
+        }
+    }
+
+    func stopSession() {
+        let message: [String: Any] = [
+            "type": "stop_session"
+        ]
+
+        if let data = try? JSONSerialization.data(withJSONObject: message),
            let jsonString = String(data: data, encoding: .utf8) {
             send(jsonString)
         }
@@ -46,23 +54,13 @@ class GeminiClient: ObservableObject {
         }
     }
 
-    func sendText(_ text: String) {
-        let payload = ["text": text]
-        if let data = try? JSONSerialization.data(withJSONObject: payload),
-           let jsonString = String(data: data, encoding: .utf8) {
-            send(jsonString)
-        }
-    }
-
     func sendFrame(_ base64: String) {
-        let payload: [String: Any] = [
-            "realtime_input": [
-                "media_chunks": [
-                    ["mime_type": "image/jpeg", "data": base64]
-                ]
-            ]
+        let message: [String: Any] = [
+            "type": "screen_frame",
+            "image_data": base64
         ]
-        if let data = try? JSONSerialization.data(withJSONObject: payload),
+
+        if let data = try? JSONSerialization.data(withJSONObject: message),
            let jsonString = String(data: data, encoding: .utf8) {
             send(jsonString)
         }
@@ -76,36 +74,92 @@ class GeminiClient: ObservableObject {
             case .success(let message):
                 switch message {
                 case .string(let text):
-                    // Try to parse as JSON first to handle status messages
-                    if let data = text.data(using: .utf8),
-                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    print("🔍 Raw message received: \(text)")
 
-                        if let status = json["status"] as? String,
-                           let message = json["message"] as? String {
-                            print("📋 Status: \(status) - \(message)")
-                            DispatchQueue.main.async {
-                                self?.receivedMessages.append("Status: \(message)")
+                    // Parse JSON messages from the server
+                    if let data = text.data(using: .utf8) {
+                        do {
+                            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                                print("🔍 Parsed JSON: \(json)")
+
+                                let messageType = json["type"] as? String
+                                print("🔍 Message type: \(String(describing: messageType))")
+
+                                switch messageType {
+                                case "session_started":
+                                    let message = json["message"] as? String ?? "Session started"
+                                    print("✅ \(message)")
+                                    DispatchQueue.main.async {
+                                        self?.isSessionActive = true
+                                        self?.receivedMessages.append("📱 \(message)")
+                                    }
+
+                                case "session_stopped":
+                                    let message = json["message"] as? String ?? "Session stopped"
+                                    print("⏹️ \(message)")
+                                    DispatchQueue.main.async {
+                                        self?.isSessionActive = false
+                                        self?.receivedMessages.append("⏹️ \(message)")
+                                    }
+
+                                case "analysis_response":
+                                    if let responseText = json["text"] as? String {
+                                        print("🤖 Gemini: \(responseText)")
+                                        DispatchQueue.main.async {
+                                            self?.receivedMessages.append("🤖 \(responseText)")
+                                        }
+                                    } else {
+                                        print("❌ Analysis response missing text field")
+                                        DispatchQueue.main.async {
+                                            self?.receivedMessages.append("❌ Invalid analysis response")
+                                        }
+                                    }
+
+                                case "error":
+                                    let errorMsg = json["message"] as? String ?? "Unknown error"
+                                    print("❌ Error: \(errorMsg)")
+                                    DispatchQueue.main.async {
+                                        self?.receivedMessages.append("❌ \(errorMsg)")
+                                    }
+
+                                case "warning":
+                                    let warningMsg = json["message"] as? String ?? "Unknown warning"
+                                    print("⚠️ Warning: \(warningMsg)")
+                                    DispatchQueue.main.async {
+                                        self?.receivedMessages.append("⚠️ \(warningMsg)")
+                                    }
+
+                                case nil:
+                                    print("❌ Error: Message type is null")
+                                    print("❌ Full JSON: \(json)")
+                                    DispatchQueue.main.async {
+                                        self?.receivedMessages.append("❌ Error: Unknown message type: None")
+                                    }
+
+                                default:
+                                    print("❓ Unknown message type: \(messageType ?? "nil")")
+                                    print("❓ Full message: \(text)")
+                                    DispatchQueue.main.async {
+                                        self?.receivedMessages.append("❓ Unknown: \(messageType ?? "nil")")
+                                    }
+                                }
+                            } else {
+                                print("❌ Failed to parse as JSON dictionary")
+                                DispatchQueue.main.async {
+                                    self?.receivedMessages.append("❌ Invalid JSON format")
+                                }
                             }
-                        } else if let errorMsg = json["error"] as? String {
-                            print("❌ Server Error: \(errorMsg)")
+                        } catch {
+                            print("❌ JSON parsing error: \(error)")
+                            print("❌ Raw text: \(text)")
                             DispatchQueue.main.async {
-                                self?.receivedMessages.append("Error: \(errorMsg)")
-                            }
-                        } else if let responseText = json["text"] as? String {
-                            print("🤖 Gemini Response: \(responseText)")
-                            DispatchQueue.main.async {
-                                self?.receivedMessages.append("Gemini: \(responseText)")
-                            }
-                        } else {
-                            // Fallback for other JSON messages
-                            DispatchQueue.main.async {
-                                self?.receivedMessages.append("Server: \(text)")
+                                self?.receivedMessages.append("❌ JSON Error: \(error.localizedDescription)")
                             }
                         }
                     } else {
-                        // Fallback for non-JSON messages
+                        print("❌ Failed to convert text to data")
                         DispatchQueue.main.async {
-                            self?.receivedMessages.append("Gemini: \(text)")
+                            self?.receivedMessages.append("❌ Text encoding error")
                         }
                     }
                 case .data(let data):
