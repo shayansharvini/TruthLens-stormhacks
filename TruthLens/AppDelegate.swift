@@ -23,6 +23,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Hook up screenshot → Gemini pipeline
         capture.onFrameCaptured = { [weak self] base64Image in
+            guard let self = self else { return }
+
             let payload: [String: Any] = [
                 "realtime_input": [
                     "media_chunks": [
@@ -30,7 +32,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     ]
                 ]
             ]
-            self?.gemini.send(payload: payload)
+
+            // Convert dictionary → JSON string
+            if let data = try? JSONSerialization.data(withJSONObject: payload),
+               let jsonString = String(data: data, encoding: .utf8) {
+                self.gemini.send(jsonString)  // send raw JSON to Gemini
+            }
         }
 
         // Create the popover

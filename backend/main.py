@@ -1,126 +1,261 @@
-# pip install --upgrade google-genai==0.3.0
+
+"""
+## Setup
+
+To install the dependencies for this script, run:
+
+``` 
+pip install google-genai opencv-python pyaudio pillow mss
+```
+
+Before running this script, ensure the `GOOGLE_API_KEY` environment
+variable is set to the api-key you obtained from Google AI Studio.
+
+Important: **Use headphones**. This script uses the system default audio
+input and output, which often won't include echo cancellation. So to prevent
+the model from interrupting itself it is important that you use headphones. 
+
+## Run
+
+To run the script:
+
+```
+python Get_started_LiveAPI.py
+```
+
+The script takes a video-mode flag `--mode`, this can be "camera", "screen", or "none".
+The default is "camera". To share your screen run:
+
+```
+python Get_started_LiveAPI.py --mode screen
+```
+"""
+
 import asyncio
-import json
-import os
-import websockets
-from google import genai
 import base64
-from dotenv import load_dotenv
+import io
+import os
+import sys
+import traceback
 
-# Load .env file
-load_dotenv()
+import cv2
+import pyaudio
+import PIL.Image
+import mss
 
-# Get API key from environment
-api_key = os.getenv("GOOGLE_API_KEY")
-if not api_key:
-    raise ValueError("GOOGLE_API_KEY not found in .env file!")
+import argparse
 
-# Choose model
-MODEL = "gemini-2.0-flash-exp"
+from google import genai
 
-# Create client with API key
-client = genai.Client(
-    api_key=api_key,
-    http_options={"api_version": "v1alpha"},
-)
+if sys.version_info < (3, 11, 0):
+    import taskgroup, exceptiongroup
 
-async def gemini_session_handler(client_websocket):
-    """Handles the interaction with Gemini API within a websocket session."""
-    try:
-        config_message = await client_websocket.recv()
-        config_data = json.loads(config_message)
-        config = config_data.get("setup", {})
-        config["system_instruction"] = (
-            "You are a helpful assistant for screen sharing sessions. Your role is to:\n"
-            "1) Analyze and describe the content being shared on screen\n"
-            "2) Answer questions about the shared content\n"
-            "3) Provide relevant information and context about what's being shown\n"
-            "4) Assist with technical issues related to screen sharing\n"
-            "5) Maintain a professional and helpful tone. Focus on being concise and clear."
+    asyncio.TaskGroup = taskgroup.TaskGroup
+    asyncio.ExceptionGroup = exceptiongroup.ExceptionGroup
+
+FORMAT = pyaudio.paInt16
+CHANNELS = 1
+SEND_SAMPLE_RATE = 16000
+RECEIVE_SAMPLE_RATE = 24000
+CHUNK_SIZE = 1024
+
+MODEL = "models/gemini-2.0-flash-live-001"
+
+DEFAULT_MODE = "camera"
+
+client = genai.Client(http_options={"api_version": "v1beta"})
+
+CONFIG = {"response_modalities": ["AUDIO"]}
+
+pya = pyaudio.PyAudio()
+
+
+class AudioLoop:
+    def __init__(self, video_mode=DEFAULT_MODE):
+        self.video_mode = video_mode
+
+        self.audio_in_queue = None
+        self.out_queue = None
+
+        self.session = None
+
+        self.send_text_task = None
+        self.receive_audio_task = None
+        self.play_audio_task = None
+
+    async def send_text(self):
+        while True:
+            text = await asyncio.to_thread(
+                input,
+                "message > ",
+            )
+            if text.lower() == "q":
+                break
+            await self.session.send(input=text or ".", end_of_turn=True)
+
+    def _get_frame(self, cap):
+        # Read the frameq
+        ret, frame = cap.read()
+        # Check if the frame was read successfully
+        if not ret:
+            return None
+        # Fix: Convert BGR to RGB color space
+        # OpenCV captures in BGR but PIL expects RGB format
+        # This prevents the blue tint in the video feed
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = PIL.Image.fromarray(frame_rgb)  # Now using RGB frame
+        img.thumbnail([1024, 1024])
+
+        image_io = io.BytesIO()
+        img.save(image_io, format="jpeg")
+        image_io.seek(0)
+
+        mime_type = "image/jpeg"
+        image_bytes = image_io.read()
+        return {"mime_type": mime_type, "data": base64.b64encode(image_bytes).decode()}
+
+    async def get_frames(self):
+        # This takes about a second, and will block the whole program
+        # causing the audio pipeline to overflow if you don't to_thread it.
+        cap = await asyncio.to_thread(
+            cv2.VideoCapture, 0
+        )  # 0 represents the default camera
+
+        while True:
+            frame = await asyncio.to_thread(self._get_frame, cap)
+            if frame is None:
+                break
+
+            await asyncio.sleep(1.0)
+
+            await self.out_queue.put(frame)
+
+        # Release the VideoCapture object
+        cap.release()
+
+    def _get_screen(self):
+        sct = mss.mss()
+        monitor = sct.monitors[0]
+
+        i = sct.grab(monitor)
+
+        mime_type = "image/jpeg"
+        image_bytes = mss.tools.to_png(i.rgb, i.size)
+        img = PIL.Image.open(io.BytesIO(image_bytes))
+
+        image_io = io.BytesIO()
+        img.save(image_io, format="jpeg")
+        image_io.seek(0)
+
+        image_bytes = image_io.read()
+        return {"mime_type": mime_type, "data": base64.b64encode(image_bytes).decode()}
+
+    async def get_screen(self):
+
+        while True:
+            frame = await asyncio.to_thread(self._get_screen)
+            if frame is None:
+                break
+
+            await asyncio.sleep(1.0)
+
+            await self.out_queue.put(frame)
+
+    async def send_realtime(self):
+        while True:
+            msg = await self.out_queue.get()
+            await self.session.send(input=msg)
+
+    async def listen_audio(self):
+        mic_info = pya.get_default_input_device_info()
+        self.audio_stream = await asyncio.to_thread(
+            pya.open,
+            format=FORMAT,
+            channels=CHANNELS,
+            rate=SEND_SAMPLE_RATE,
+            input=True,
+            input_device_index=mic_info["index"],
+            frames_per_buffer=CHUNK_SIZE,
         )
+        if __debug__:
+            kwargs = {"exception_on_overflow": False}
+        else:
+            kwargs = {}
+        while True:
+            data = await asyncio.to_thread(self.audio_stream.read, CHUNK_SIZE, **kwargs)
+            await self.out_queue.put({"data": data, "mime_type": "audio/pcm"})
 
-        async with client.aio.live.connect(model=MODEL, config=config) as session:
-            print("Connected to Gemini API")
+    async def receive_audio(self):
+        "Background task to reads from the websocket and write pcm chunks to the output queue"
+        while True:
+            turn = self.session.receive()
+            async for response in turn:
+                if data := response.data:
+                    self.audio_in_queue.put_nowait(data)
+                    continue
+                if text := response.text:
+                    print(text, end="")
 
-            async def send_to_gemini():
-                try:
-                    async for message in client_websocket:
-                        try:
-                            data = json.loads(message)
-                            if "realtime_input" in data:
-                                for chunk in data["realtime_input"]["media_chunks"]:
-                                    if chunk["mime_type"] == "audio/pcm":
-                                        await session.send({
-                                            "mime_type": "audio/pcm",
-                                            "data": chunk["data"]
-                                        })
-                                    elif chunk["mime_type"] == "image/jpeg":
-                                        await session.send({
-                                            "mime_type": "image/jpeg",
-                                            "data": chunk["data"]
-                                        })
-                        except Exception as e:
-                            print(f"Error sending to Gemini: {e}")
-                    print("Client connection closed (send)")
-                except Exception as e:
-                    print(f"Error sending to Gemini: {e}")
-                finally:
-                    print("send_to_gemini closed")
+            # If you interrupt the model, it sends a turn_complete.
+            # For interruptions to work, we need to stop playback.
+            # So empty out the audio queue because it may have loaded
+            # much more audio than has played yet.
+            while not self.audio_in_queue.empty():
+                self.audio_in_queue.get_nowait()
 
-            async def receive_from_gemini():
-                try:
-                    while True:
-                        try:
-                            print("Receiving from Gemini")
-                            async for response in session.receive():
-                                if response.server_content is None:
-                                    print(f'Unhandled server message! - {response}')
-                                    continue
+    async def play_audio(self):
+        stream = await asyncio.to_thread(
+            pya.open,
+            format=FORMAT,
+            channels=CHANNELS,
+            rate=RECEIVE_SAMPLE_RATE,
+            output=True,
+        )
+        while True:
+            bytestream = await self.audio_in_queue.get()
+            await asyncio.to_thread(stream.write, bytestream)
 
-                                model_turn = response.server_content.model_turn
-                                if model_turn:
-                                    for part in model_turn.parts:
-                                        if hasattr(part, "text") and part.text is not None:
-                                            await client_websocket.send(
-                                                json.dumps({"text": part.text})
-                                            )
-                                        elif hasattr(part, "inline_data") and part.inline_data is not None:
-                                            print("Audio mime_type:", part.inline_data.mime_type)
-                                            base64_audio = base64.b64encode(
-                                                part.inline_data.data
-                                            ).decode("utf-8")
-                                            await client_websocket.send(
-                                                json.dumps({"audio": base64_audio})
-                                            )
-                                            print("Audio received")
+    async def run(self):
+        try:
+            async with (
+                client.aio.live.connect(model=MODEL, config=CONFIG) as session,
+                asyncio.TaskGroup() as tg,
+            ):
+                self.session = session
 
-                                if response.server_content.turn_complete:
-                                    print("\n<Turn complete>")
-                        except websockets.exceptions.ConnectionClosedOK:
-                            print("Client connection closed normally (receive)")
-                            break
-                        except Exception as e:
-                            print(f"Error receiving from Gemini: {e}")
-                            break
-                except Exception as e:
-                    print(f"Error receiving from Gemini: {e}")
-                finally:
-                    print("Gemini connection closed (receive)")
+                self.audio_in_queue = asyncio.Queue()
+                self.out_queue = asyncio.Queue(maxsize=5)
 
-            # Start loops
-            send_task = asyncio.create_task(send_to_gemini())
-            receive_task = asyncio.create_task(receive_from_gemini())
-            await asyncio.gather(send_task, receive_task)
+                send_text_task = tg.create_task(self.send_text())
+                tg.create_task(self.send_realtime())
+                tg.create_task(self.listen_audio())
+                if self.video_mode == "camera":
+                    tg.create_task(self.get_frames())
+                elif self.video_mode == "screen":
+                    tg.create_task(self.get_screen())
 
-    except Exception as e:
-        print(f"Error in Gemini session: {e}")
-    finally:
-        print("Gemini session closed.")
+                tg.create_task(self.receive_audio())
+                tg.create_task(self.play_audio())
 
-async def main() -> None:
-    async with websockets.serve(gemini_session_handler, "0.0.0.0", 9083):
-        print("Running websocket server on localhost:9083...")
-        await asyncio.Future()  # keep running forever
+                await send_text_task
+                raise asyncio.CancelledError("User requested exit")
+
+        except asyncio.CancelledError:
+            pass
+        except ExceptionGroup as EG:
+            self.audio_stream.close()
+            traceback.print_exception(EG)
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default=DEFAULT_MODE,
+        help="pixels to stream from",
+        choices=["camera", "screen", "none"],
+    )
+    args = parser.parse_args()
+    main = AudioLoop(video_mode=args.mode)
+    asyncio.run(main.run())

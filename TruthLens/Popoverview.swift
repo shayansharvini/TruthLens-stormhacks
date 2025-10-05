@@ -5,40 +5,74 @@ struct PopoverView: View {
     var capture: ScreenshotCapture
 
     var body: some View {
-        VStack(spacing: 12) {
-            Text("TruthLens")
+        VStack(alignment: .leading, spacing: 8) {
+            Text("🤖 Gemini Live Assistant")
                 .font(.headline)
+                .foregroundColor(.blue)
 
-            // Show Gemini responses
+            // Larger response area
             ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(gemini.messages, id: \.self) { msg in
-                        Text(msg)
-                            .font(.caption)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(4)
-                            .background(Color.gray.opacity(0.1))
-                            .cornerRadius(6)
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    ForEach(gemini.receivedMessages.indices, id: \.self) { index in
+                        let message = gemini.receivedMessages[index]
+                        HStack {
+                            if message.hasPrefix("Gemini:") {
+                                Text("🤖")
+                                Text(message)
+                                    .foregroundColor(.primary)
+                                    .textSelection(.enabled)
+                            } else if message.hasPrefix("Status:") {
+                                Text("📋")
+                                Text(message)
+                                    .foregroundColor(.green)
+                                    .font(.caption)
+                            } else if message.hasPrefix("Error:") {
+                                Text("❌")
+                                Text(message)
+                                    .foregroundColor(.red)
+                                    .font(.caption)
+                            } else {
+                                Text("ℹ️")
+                                Text(message)
+                                    .foregroundColor(.gray)
+                                    .font(.caption)
+                            }
+                            Spacer()
+                        }
+                        .padding(4)
+                        .background(Color.gray.opacity(0.1))
+                        .cornerRadius(4)
                     }
                 }
             }
-            .frame(height: 100)
+            .frame(height: 200)
+            .border(Color.gray.opacity(0.3))
 
-            Button("Start Session") {
-                gemini.connect()
-                capture.startCapture()
+            HStack {
+                Button("💬 Send Test") {
+                    gemini.sendText("Hello! Can you see my screen? Please describe what you observe.")
+                }
+                .buttonStyle(.borderedProminent)
+
+                Spacer()
+
+                Button("📸 Start Capture") {
+                    capture.startCapture()
+                }
+                .buttonStyle(.bordered)
+
+                Button("⏹️ Stop") {
+                    capture.stopCapture()
+                }
+                .buttonStyle(.bordered)
             }
 
-            Button("Stop Capture") {
-                capture.stopCapture()
-                gemini.disconnect()
-            }
-
-            Button("Quit App") {
-                NSApp.terminate(nil)
-            }
+            Text("Messages: \(gemini.receivedMessages.count)")
+                .font(.caption)
+                .foregroundColor(.gray)
         }
         .padding()
-        .frame(width: 280, height: 220)
+        .frame(width: 400, height: 300)
     }
 }
+
