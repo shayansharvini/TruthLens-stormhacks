@@ -72,6 +72,7 @@ async def analyze_screenshot(image_bytes: bytes) -> str:
                                 "- If you can find vaild information to prove the article is real (you need at least 3 different sources), respond exactly with 'TRUE'.\n"
                                 "- If you cant find vaild information to prove the article is real (you need at least 3 different sources), respond exactly with 'FALSE'.\n"
                                 "- If you do not see a news article, Do not output text\n"
+                                "- Do not have a bais you will recieve many different news articles you last answer should dont dictate your next answer.\n"
                                 "- There is only two possible answers when you see a news artical 'TRUE' and 'FALSE' its your job to figure out what news is true and what news is false."
                             )
                         },
