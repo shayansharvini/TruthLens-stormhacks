@@ -24,7 +24,7 @@ client = genai.Client(
     http_options={"api_version": "v1alpha"},
 )
 
-async def gemini_session_handler(client_websocket: websockets.WebSocketServerProtocol):
+async def gemini_session_handler(client_websocket):
     """Handles the interaction with Gemini API within a websocket session."""
     try:
         config_message = await client_websocket.recv()
@@ -118,7 +118,7 @@ async def gemini_session_handler(client_websocket: websockets.WebSocketServerPro
         print("Gemini session closed.")
 
 async def main() -> None:
-    async with websockets.serve(gemini_session_handler, "localhost", 9083):
+    async with websockets.serve(gemini_session_handler, "0.0.0.0", 9083):
         print("Running websocket server on localhost:9083...")
         await asyncio.Future()  # keep running forever
 
