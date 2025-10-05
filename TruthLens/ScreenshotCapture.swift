@@ -12,6 +12,9 @@ class ScreenshotCapture: NSObject {
     /// Callback whenever a new frame is captured (Base64 JPEG).
     var onFrameCaptured: ((String) -> Void)?
 
+    /// Window to exclude from screenshots (like popup window)
+    weak var windowToExclude: NSWindow?
+
     /// Start capturing the main display.
     func startCapture() {
         Task {
@@ -25,10 +28,23 @@ class ScreenshotCapture: NSObject {
                     return
                 }
 
-                // Configure filter to capture the whole display
+                // Configure filter to capture the whole display, excluding popup window
+                var exceptingWindows: [SCWindow] = []
+
+                // Add popup window to exclusion list if it exists
+                if let windowToExclude = self.windowToExclude {
+                    // Find the SCWindow that matches our NSWindow
+                    if let scWindow = content.windows.first(where: { scWindow in
+                        scWindow.windowID == CGWindowID(windowToExclude.windowNumber)
+                    }) {
+                        exceptingWindows.append(scWindow)
+                        print("✅ Excluding popup window from screenshots")
+                    }
+                }
+
                 let filter = SCContentFilter(display: display,
                                              excludingApplications: [],
-                                             exceptingWindows: [])
+                                             exceptingWindows: exceptingWindows)
 
                 // Stream configuration
                 let config = SCStreamConfiguration()
@@ -71,7 +87,7 @@ extension ScreenshotCapture: SCStreamOutput, SCStreamDelegate {
 
         // Throttle frames (avoid sending too often)
         let now = Date()
-        guard now.timeIntervalSince(lastFrameSent) >= 5 else { return }
+        guard now.timeIntervalSince(lastFrameSent) >= 2 else { return }
         lastFrameSent = now
 
         guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }

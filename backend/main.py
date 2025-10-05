@@ -64,12 +64,15 @@ async def analyze_screenshot(image_bytes: bytes) -> str:
                     "parts": [
                         {
                             "text": (
+                                "** The only two words you are allowed to use is 'TRUE' and 'FASLE'.**\n"
+                                "** Always do research before claiming soemthing is 'TRUE' OR 'FALSE'**"
                                 "You are a news fact checker. Look at this screenshot.\n"
                                 "- If you see a news article, use the Google Search tool"
                                 "to verify if the article is True or False.\n"
-                                "- If the article is true, respond exactly with 'REAL NEWS'.\n"
-                                "- If the article is false, respond exactly with 'FAKE NEWS'.\n"
-                                "- If you do not see a news article, never respond."
+                                "- If you can find vaild information to prove the article is real (you need at least 3 different sources), respond exactly with 'TRUE'.\n"
+                                "- If you cant find vaild information to prove the article is real (you need at least 3 different sources), respond exactly with 'FALSE'.\n"
+                                "- If you do not see a news article, Do not output text\n"
+                                "- There is only two possible answers when you see a news artical 'TRUE' and 'FALSE' its your job to figure out what news is true and what news is false."
                             )
                         },
                         {"inline_data": {"mime_type": "image/jpeg", "data": image_bytes}},
