@@ -42,25 +42,44 @@ def decode_base64_image(image_b64: str) -> bytes:
 
 
 async def analyze_screenshot(image_bytes: bytes) -> str:
-    """Send screenshot to Gemini for news detection/summarization."""
+    """Send screenshot to Gemini for fact checking news articles."""
     if not image_bytes:
         return "ERROR: Empty image data"
 
     try:
+
+        grounding_tool = types.Tool(
+            google_search=types.GoogleSearch()
+        )
+
+        config = types.GenerateContentConfig(
+            tools=[grounding_tool]
+        )
+    
         resp = client.models.generate_content(
             model=MODEL,
             contents=[
-                "You are a news fact checker. Look at this screenshot.",
-                "If you see a news artical, use the Google Search Retrieval tool to verify if the artical is True or False",
-                "If the article is true, respond exactly with 'REAL NEWS '.",
-                "If the artical has false, respond exactly with 'FAKE NEWS'.",
-                "If you do not see a news artical, Never respond",
-                types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg") 
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": (
+                                "You are a news fact checker. Look at this screenshot.\n"
+                                "- If you see a news article, use the Google Search tool"
+                                "to verify if the article is True or False.\n"
+                                "- If the article is true, respond exactly with 'REAL NEWS'.\n"
+                                "- If the article is false, respond exactly with 'FAKE NEWS'.\n"
+                                "- If you do not see a news article, never respond."
+                            )
+                        },
+                        {"inline_data": {"mime_type": "image/jpeg", "data": image_bytes}},
+                    ],
+                }
             ],
-            tools=[{"googleSearchRetrieval": {}}]
             
         )
-        return resp.text.strip()
+
+        return resp.text.strip() if resp.text else "NO RESPONSE"
     except Exception as e:
         logger.error(f"Gemini analysis failed: {e}")
         return "ERROR: Gemini failed"
