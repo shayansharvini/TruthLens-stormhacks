@@ -6,7 +6,7 @@ struct TruthLens: App {
 
     var body: some Scene {
         Settings {
-            EmptyView() // No settings window
+            EmptyView() // no settings window
         }
     }
 }

@@ -71,7 +71,7 @@ extension ScreenshotCapture: SCStreamOutput, SCStreamDelegate {
 
         // Throttle frames (avoid sending too often)
         let now = Date()
-        guard now.timeIntervalSince(lastFrameSent) >= 0.5 else { return }
+        guard now.timeIntervalSince(lastFrameSent) >= 5 else { return }
         lastFrameSent = now
 
         guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
@@ -82,7 +82,7 @@ extension ScreenshotCapture: SCStreamOutput, SCStreamDelegate {
             let context = CIContext()
             if let jpegData = context.jpegRepresentation(of: ciImage,
                                                          colorSpace: CGColorSpaceCreateDeviceRGB()) {
-                let base64String = jpegData.base64EncodedString()
+                let base64String = "data:image/jpeg;base64," + jpegData.base64EncodedString()
 
                 // Call back on main thread
                 DispatchQueue.main.async {
